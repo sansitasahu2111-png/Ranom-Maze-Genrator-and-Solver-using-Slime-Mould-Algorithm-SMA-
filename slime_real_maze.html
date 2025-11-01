@@ -1,0 +1,470 @@
+<!--
+  maze-sma.html
+  Checkpoint 1: Hybrid SMA + BFS maze solver (random maze generator + SMA exploration + BFS path reconstruction)
+  Author: (generated for you)
+  Usage: Open this file in a browser. Click "Generate Maze", then "Solve Maze".
+-->
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Maze — Slime Mold (SMA) + BFS (Checkpoint 1)</title>
+<style>
+  :root{
+    --bg:#0b1220; --panel:#071126; --accent:#7dd3fc; --ok:#22c55e; --bad:#ef4444; --path:#facc15;
+  }
+  body{margin:0; min-height:100vh; background:linear-gradient(180deg,var(--bg),#041225); color:#e6eef8; font-family:Inter,Segoe UI,Arial; display:flex; align-items:center; justify-content:center; padding:18px;}
+  .wrap{display:flex; gap:18px; width:100%; max-width:1200px;}
+  .left{flex:1; background:linear-gradient(180deg,#04142700,#02101a26); padding:12px;border-radius:10px; box-shadow:0 8px 30px rgba(2,6,23,0.6);}
+  canvas{background:#ffffff; border-radius:6px; display:block; cursor:crosshair; box-shadow:0 10px 30px rgba(2,6,23,0.45); border:8px solid #0b1220;}
+  .controls{width:320px; background:var(--panel); padding:16px; border-radius:10px; box-shadow:0 8px 30px rgba(2,6,23,0.55);}
+  h2{margin:0 0 8px 0; color:var(--accent)}
+  label{font-size:13px;color:#9fb3c9}
+  .row{display:flex; gap:8px; margin:10px 0}
+  button{flex:1;padding:8px 10px;border-radius:8px;border:0;background:#0f1724;color:#cfe9ff;cursor:pointer}
+  button.primary{background:linear-gradient(90deg,var(--accent),#a78bfa); color:#021127;font-weight:700}
+  .small{font-size:13px;color:#9fb3c9}
+  input[type="range"]{width:100%}
+  .footer{font-size:12px;color:#8ea7bf;margin-top:12px}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="left">
+    <h2>Slime Mold Maze — Checkpoint 1 (Hybrid SMA+BFS)</h2>
+    <canvas id="canvas" width="1000" height="540"></canvas>
+    <div style="display:flex;justify-content:space-between;margin-top:8px">
+      <div class="small" id="status">Maze ready</div>
+      <div class="small">Path length: <span id="pathlen">—</span></div>
+    </div>
+  </div>
+
+  <div class="controls">
+    <div style="display:flex;gap:8px">
+      <button id="genBtn" class="primary">Generate Maze</button>
+      <button id="solveBtn">Solve Maze</button>
+    </div>
+
+    <div class="row">
+      <button id="resetBtn">Reset</button>
+      <button id="autoBtn">Auto Solve: Off</button>
+    </div>
+
+    <div style="margin-top:8px">
+      <label>Maze size (cols × rows)</label>
+      <div style="display:flex;gap:8px;margin-top:6px">
+        <input id="cols" type="number" min="21" max="201" step="2" value="101" style="width:48%"/>
+        <input id="rows" type="number" min="11" max="121" step="2" value="55" style="width:48%"/>
+      </div>
+      <div class="small" style="margin-top:6px">Use odd numbers for perfect mazes (corridor thickness 1).</div>
+    </div>
+
+    <div style="margin-top:10px">
+      <label>Slime population</label>
+      <input id="pop" type="range" min="1" max="200" step="1" value="36"/>
+      <div class="small">Agents: <span id="popVal">36</span></div>
+    </div>
+
+    <div style="margin-top:10px">
+      <label>Simulation speed (ms per step)</label>
+      <input id="speed" type="range" min="10" max="300" step="5" value="40"/>
+      <div class="small">Delay: <span id="speedVal">40</span> ms</div>
+    </div>
+
+    <div style="margin-top:12px">
+      <div class="small">Tip: Click canvas to set Start or End manually. First click sets Start, second sets End, third toggles walls.</div>
+      <div class="footer">Host: Save as <code>maze-sma.html</code> and upload to GitHub Pages or Netlify Drop.</div>
+    </div>
+  </div>
+</div>
+
+<script>
+/* ========== Checkpoint 1 (saved in file header) ==========
+   Hybrid SMA + BFS Maze Solver
+   - Maze generator: Recursive backtracker (perfect maze)
+   - SMA-like explorers (agents) diffuse from Start
+   - When explorer reaches End, BFS reconstructs shortest path
+   - Author marked this state as "Checkpoint 1"
+========================================================= */
+
+const canvas = document.getElementById('canvas');
+const ctx = canvas.getContext('2d');
+
+let COLS = parseInt(document.getElementById('cols').value,10) || 101;
+let ROWS = parseInt(document.getElementById('rows').value,10) || 55;
+let cellW = canvas.width / COLS;
+let cellH = canvas.height / ROWS;
+let maze = []; // 0 path, 1 wall
+let start = null, end = null;
+let pop = parseInt(document.getElementById('pop').value,10) || 36;
+let speed = parseInt(document.getElementById('speed').value,10) || 40;
+let running = false;
+let autoSolve = false;
+let agents = [];
+let stepTimer = null;
+let reached = false;
+let bfsPath = [];
+
+const statusEl = document.getElementById('status');
+const pathlenEl = document.getElementById('pathlen');
+
+function resizeParams() {
+  COLS = Math.max(21, parseInt(document.getElementById('cols').value,10) || 101);
+  ROWS = Math.max(11, parseInt(document.getElementById('rows').value,10) || 55);
+  // ensure odd sizes for perfect maze
+  if (COLS % 2 === 0) COLS += 1;
+  if (ROWS % 2 === 0) ROWS += 1;
+  cellW = canvas.width / COLS;
+  cellH = canvas.height / ROWS;
+}
+
+document.getElementById('cols').addEventListener('change', ()=>{ resizeParams(); });
+document.getElementById('rows').addEventListener('change', ()=>{ resizeParams(); });
+
+document.getElementById('pop').addEventListener('input', (e)=>{
+  pop = parseInt(e.target.value,10);
+  document.getElementById('popVal').textContent = pop;
+});
+document.getElementById('speed').addEventListener('input', (e)=>{
+  speed = parseInt(e.target.value,10);
+  document.getElementById('speedVal').textContent = speed;
+});
+
+/* ---------------- Maze generator (recursive backtracker) ----------------
+   We create a grid where odd cells are corridors.
+   Representation:
+     - maze[y][x] === 1 means wall; 0 is open.
+*/
+function initMazeArray(){
+  maze = Array.from({length: ROWS}, ()=>Array(COLS).fill(1));
+}
+
+// carve using recursive backtracker (stack)
+function generateMaze(){
+  resizeParams();
+  initMazeArray();
+
+  // start on an odd coordinate
+  const sx = 1, sy = 1;
+  const stack = [{x:sx,y:sy}];
+  maze[sy][sx] = 0;
+
+  while(stack.length){
+    const cur = stack[stack.length-1];
+    const neighbors = [];
+    const dirs = [
+      {dx:0,dy:-2},{dx:2,dy:0},{dx:0,dy:2},{dx:-2,dy:0}
+    ];
+    for(const d of dirs){
+      const nx = cur.x + d.dx, ny = cur.y + d.dy;
+      if(nx > 0 && nx < COLS-1 && ny > 0 && ny < ROWS-1 && maze[ny][nx] === 1){
+        neighbors.push({x:nx,y:ny,bridge:{bx:cur.x + d.dx/2, by: cur.y + d.dy/2}});
+      }
+    }
+    if(neighbors.length === 0){
+      stack.pop();
+    } else {
+      const nxt = neighbors[Math.floor(Math.random() * neighbors.length)];
+      // carve bridge and cell
+      maze[nxt.bridge.by][nxt.bridge.bx] = 0;
+      maze[nxt.y][nxt.x] = 0;
+      stack.push({x:nxt.x,y:nxt.y});
+    }
+  }
+
+  // optionally add some random extra walls openings to make longer halls resemble the image
+  // (we keep it as a perfect maze for now)
+  // choose default start/end: top-left open and bottom-right open
+  // find nearest open cells to corners:
+  start = findNearestOpen(1,1);
+  end = findNearestOpen(COLS-2, ROWS-2);
+  bfsPath = [];
+  reached = false;
+  agents = [];
+  draw();
+  statusEl.textContent = 'Maze generated';
+}
+
+function findNearestOpen(cx,cy){
+  // simple scan for nearest 0 cell
+  let best = null;
+  let bestD = Infinity;
+  for(let y=0;y<ROWS;y++){
+    for(let x=0;x<COLS;x++){
+      if(maze[y][x] === 0){
+        const d = Math.abs(x-cx) + Math.abs(y-cy);
+        if(d < bestD){ bestD = d; best = {x,y}; }
+      }
+    }
+  }
+  return best;
+}
+
+/* ---------------- Drawing ---------------- */
+function draw(){
+  ctx.clearRect(0,0,canvas.width,canvas.height);
+  // draw background
+  ctx.fillStyle = '#fff';
+  ctx.fillRect(0,0,canvas.width,canvas.height);
+
+  // walls
+  ctx.fillStyle = '#111827'; // wall dark
+  for(let y=0;y<ROWS;y++){
+    for(let x=0;x<COLS;x++){
+      if(maze[y][x] === 1){
+        ctx.fillRect(x*cellW, y*cellH, cellW, cellH);
+      }
+    }
+  }
+
+  // BFS path (yellow)
+  if(bfsPath && bfsPath.length){
+    ctx.fillStyle = '#facc15';
+    for(const p of bfsPath){
+      ctx.fillRect(p.x*cellW + cellW*0.12, p.y*cellH + cellH*0.12, cellW*0.76, cellH*0.76);
+    }
+  }
+
+  // agents (slime) (pheromone-looking)
+  if(agents && agents.length){
+    // draw with alpha blending to show density
+    for(const a of agents){
+      ctx.fillStyle = `rgba(14,165,233,${Math.min(0.8, 0.2 + (a.energy||1)/4)})`;
+      ctx.fillRect(a.x*cellW + cellW*0.15, a.y*cellH + cellH*0.15, cellW*0.7, cellH*0.7);
+    }
+  }
+
+  // start/end
+  if(start){
+    ctx.fillStyle = '#22c55e';
+    ctx.fillRect(start.x*cellW + cellW*0.12, start.y*cellH + cellH*0.12, cellW*0.76, cellH*0.76);
+  }
+  if(end){
+    ctx.fillStyle = '#ef4444';
+    ctx.fillRect(end.x*cellW + cellW*0.12, end.y*cellH + cellH*0.12, cellW*0.76, cellH*0.76);
+  }
+
+  // grid lines optional (commented out to mimic image)
+  // ctx.strokeStyle = 'rgba(0,0,0,0.05)'; ctx.lineWidth = 0.5;
+  // for(let x=0;x<=COLS;x++){ ctx.beginPath(); ctx.moveTo(x*cellW,0); ctx.lineTo(x*cellW,canvas.height); ctx.stroke(); }
+  // for(let y=0;y<=ROWS;y++){ ctx.beginPath(); ctx.moveTo(0,y*cellH); ctx.lineTo(canvas.width,y*cellH); ctx.stroke(); }
+}
+
+/* ---------------- Interaction: click to set start/end or toggle walls ----------------
+   First click sets start, second sets end, further clicks toggle walls.
+*/
+let clickState = 0;
+canvas.addEventListener('click', (e)=>{
+  const rect = canvas.getBoundingClientRect();
+  const cx = Math.floor((e.clientX - rect.left) / cellW);
+  const cy = Math.floor((e.clientY - rect.top) / cellH);
+  if(cx < 0 || cx >= COLS || cy < 0 || cy >= ROWS) return;
+  if(clickState === 0){
+    if(maze[cy][cx] === 0){ start = {x:cx,y:cy}; statusEl.textContent = 'Start set'; clickState = 1; draw(); }
+  } else if(clickState === 1){
+    if(maze[cy][cx] === 0){ end = {x:cx,y:cy}; statusEl.textContent = 'End set'; clickState = 2; draw(); }
+  } else {
+    // toggle wall <-> open (only if not start/end)
+    if(start && cx === start.x && cy === start.y) return;
+    if(end && cx === end.x && cy === end.y) return;
+    maze[cy][cx] = maze[cy][cx] === 1 ? 0 : 1;
+    statusEl.textContent = 'Toggled wall';
+    draw();
+  }
+});
+
+/* ---------------- SMA-like exploration (agents) ----------------
+  Agents are simple walkers biased by local pheromone. We keep a pheromone grid that accumulates visits.
+  When any agent reaches end, we stop and run BFS to build the true shortest path.
+*/
+let pheromone = [];
+
+function resetPheromone(){
+  pheromone = Array.from({length: ROWS}, ()=>Array(COLS).fill(0));
+}
+
+function spawnAgents(){
+  agents = [];
+  for(let i=0;i<pop;i++){
+    agents.push({ x: start.x, y: start.y, energy: 1 + Math.random()*2 });
+  }
+}
+
+function inBounds(x,y){ return x>=0 && x<COLS && y>=0 && y<ROWS; }
+function neighbors4(x,y){
+  const n = [];
+  const ds = [{dx:1,dy:0},{dx:-1,dy:0},{dx:0,dy:1},{dx:0,dy:-1}];
+  for(const d of ds){
+    const nx = x + d.dx, ny = y + d.dy;
+    if(inBounds(nx,ny) && maze[ny][nx] === 0) n.push({x:nx,y:ny});
+  }
+  return n;
+}
+
+function stepAgents(){
+  if(!agents || agents.length===0) return;
+  const newAgents = [];
+  for(const a of agents){
+    // deposit pheromone
+    pheromone[a.y][a.x] += 0.6 + Math.random()*0.6;
+    // move probabilistically to neighbors weighted by pheromone (prefer higher)
+    const nbs = neighbors4(a.x, a.y);
+    if(nbs.length === 0) continue;
+    // compute weights
+    let total = 0;
+    const weights = [];
+    for(const nb of nbs){
+      // small heuristic towards end: prefer moves that decrease Manhattan distance
+      const curDist = Math.abs(a.x - end.x) + Math.abs(a.y - end.y);
+      const nbDist = Math.abs(nb.x - end.x) + Math.abs(nb.y - end.y);
+      const heuristic = (curDist - nbDist) > 0 ? 1.4 : 1.0; // slight bias to closer cells
+      const pher = 1 + pheromone[nb.y][nb.x];
+      const w = Math.pow(pher, 1.0) * heuristic;
+      weights.push({nb,w});
+      total += w;
+    }
+    // roulette selection
+    let pick;
+    if(total <= 0){
+      pick = nbs[Math.floor(Math.random()*nbs.length)];
+    } else {
+      let r = Math.random() * total;
+      for(const item of weights){
+        r -= item.w;
+        if(r <= 0){ pick = item.nb; break; }
+      }
+      if(!pick) pick = weights[weights.length-1].nb;
+    }
+    // move and shrink energy
+    const newA = { x: pick.x, y: pick.y, energy: Math.min(4, a.energy + 0.05) };
+    // occasionally spawn new explorers at high-pheromone nodes (mimicking slime branching)
+    if(Math.random() < 0.02 && pheromone[newA.y][newA.x] > 2 && agents.length < pop*3){
+      newAgents.push({ x:newA.x, y:newA.y, energy:1.0 + Math.random()*1.5 });
+    }
+    newAgents.push(newA);
+    // check reach
+    if(newA.x === end.x && newA.y === end.y){
+      reached = true;
+    }
+  }
+  // evaporate pheromone a bit
+  for(let y=0;y<ROWS;y++){
+    for(let x=0;x<COLS;x++){
+      pheromone[y][x] *= 0.985;
+      if(pheromone[y][x] < 0.0001) pheromone[y][x] = 0;
+    }
+  }
+  // prune excessive agents while keeping diversity
+  agents = newAgents.length > pop*6 ? newAgents.slice(0, pop*6) : newAgents;
+}
+
+/* ---------------- BFS shortest path reconstruct ----------------
+   Use BFS on maze graph (4-neighbors) from start to end to get true shortest path when reached.
+*/
+function bfsShortestPath(){
+  const q = [];
+  const visited = Array.from({length: ROWS}, ()=>Array(COLS).fill(false));
+  const parent = Array.from({length: ROWS}, ()=>Array(COLS).fill(null));
+  q.push(start);
+  visited[start.y][start.x] = true;
+  let found = false;
+  while(q.length){
+    const cur = q.shift();
+    if(cur.x === end.x && cur.y === end.y){ found = true; break; }
+    for(const nb of neighbors4(cur.x, cur.y)){
+      if(!visited[nb.y][nb.x]){
+        visited[nb.y][nb.x] = true;
+        parent[nb.y][nb.x] = cur;
+        q.push(nb);
+      }
+    }
+  }
+  const path = [];
+  if(!found) return path;
+  let cur = end;
+  while(cur){
+    path.push(cur);
+    cur = parent[cur.y][cur.x];
+  }
+  path.reverse();
+  return path;
+}
+
+/* ---------------- Simulation control ---------------- */
+function startSolve(){
+  if(!start || !end){ statusEl.textContent = 'Place Start and End first (or regenerate maze)'; return; }
+  resetPheromone();
+  spawnAgents();
+  reached = false;
+  bfsPath = [];
+  pathlenEl.textContent = '—';
+  statusEl.textContent = 'Solving (SMA exploring)...';
+  if(stepTimer) clearInterval(stepTimer);
+  stepTimer = setInterval(()=>{
+    if(reached){
+      clearInterval(stepTimer);
+      // once reached, compute true shortest path via BFS and display
+      bfsPath = bfsShortestPath();
+      pathlenEl.textContent = bfsPath.length ? bfsPath.length : '—';
+      statusEl.textContent = bfsPath.length ? 'Path found (BFS shortest path)' : 'Reached end but BFS failed';
+      draw();
+      running = false;
+      if(autoSolve && !bfsPath.length){
+        // fallback: if BFS somehow fails, stop auto
+        autoSolve = false;
+        document.getElementById('autoBtn').textContent = 'Auto Solve: Off';
+      }
+      return;
+    }
+    stepAgents();
+    draw();
+    // if agents die out or are too few, respawn a few (mimic slime re-growth)
+    if(agents.length < Math.max(3, Math.floor(pop/4))){
+      for(let i=0;i<Math.floor(pop/2);i++) agents.push({ x:start.x, y:start.y, energy:1.0 });
+    }
+  }, speed);
+  running = true;
+}
+
+function stopSolve(){
+  if(stepTimer) clearInterval(stepTimer);
+  running = false;
+  statusEl.textContent = 'Stopped';
+}
+
+/* ---------------- Buttons ---------------- */
+document.getElementById('genBtn').addEventListener('click', ()=>{
+  generateMaze();
+});
+document.getElementById('solveBtn').addEventListener('click', ()=>{
+  if(running){ stopSolve(); } else { startSolve(); }
+});
+document.getElementById('resetBtn').addEventListener('click', ()=>{
+  if(stepTimer) clearInterval(stepTimer);
+  initMazeArray();
+  start = null; end = null; agents = []; pheromone = []; bfsPath = [];
+  statusEl.textContent = 'Reset';
+  pathlenEl.textContent = '—';
+  clickState = 0;
+  draw();
+});
+document.getElementById('autoBtn').addEventListener('click', ()=>{
+  autoSolve = !autoSolve;
+  document.getElementById('autoBtn').textContent = `Auto Solve: ${autoSolve ? 'On' : 'Off'}`;
+});
+
+/* ---------------- Initialization ---------------- */
+generateMaze(); // initial maze
+draw();
+
+/* expose some debug keys */
+window.addEventListener('keydown', (e)=>{
+  if(e.key === 'g') { generateMaze(); }
+  if(e.key === 's') { startSolve(); }
+  if(e.key === 'r') { document.getElementById('resetBtn').click(); }
+});
+
+</script>
+</body>
+</html>
