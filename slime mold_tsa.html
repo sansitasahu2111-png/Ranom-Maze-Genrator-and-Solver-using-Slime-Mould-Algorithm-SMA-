@@ -1,0 +1,347 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Slime Mold Maze — Fast (Fixed)</title>
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<style>
+  body{ margin:0; background:#0b0e12; color:#d9e6ff; font-family:Inter,Arial; display:flex; height:100vh; overflow:hidden}
+  #controls{ width:260px; background:#0f151c; padding:18px; box-shadow:0 0 20px #0006; display:flex; flex-direction:column; gap:12px }
+  button{ background:#2e63ff; color:white; padding:12px; border:none; border-radius:8px; cursor:pointer; font-weight:700 }
+  button:hover{ background:#1a48d8 }
+  .sliderBox{ font-size:13px; color:#cfe0ff }
+  #canvas{ flex:1; display:block; background:#0e1622 }
+  .hint{ font-size:12px; opacity:0.8 }
+</style>
+</head>
+<body>
+
+<div id="controls">
+  <button id="genBtn">Generate Maze</button>
+  <button id="solveBtn">Solve</button>
+  <button id="resetBtn">Reset</button>
+  <button id="autoBtn">Auto-Solve: OFF</button>
+
+  <div class="sliderBox">Maze Size: <span id="sizeLabel">21×21</span><br>
+    <input id="sizeSlider" type="range" min="11" max="51" step="2" value="21" />
+  </div>
+
+  <div class="sliderBox">Slime Agents: <span id="slimeLabel">500</span><br>
+    <input id="slimeSlider" type="range" min="100" max="1200" step="10" value="500" />
+  </div>
+
+  <!-- ✅ NEW: Path Length + Simulation Time -->
+  <div class="sliderBox">Path Length: <span id="pathLen">0</span></div>
+  <div class="sliderBox">Simulation Time: <span id="simTime">0 ms</span></div>
+
+  <div class="hint">Click canvas to set Start → End → toggle Walls. Open console (Ctrl+Shift+I) if broken.</div>
+</div>
+
+<canvas id="canvas"></canvas>
+
+<script>
+/* Fixed simplified fast maze + BFS + visual slimes
+   - Re-draws maze each animation frame
+   - Recreates slimes when slider changes
+   - Defensive checks + console logging
+*/
+
+const canvas = document.getElementById('canvas');
+const ctx = canvas.getContext('2d');
+
+let COLS = 21, ROWS = 21;
+let cellSize = 30;
+let maze = [];
+let start = null, end = null;
+let slimes = [];
+let slimeCount = 500;
+let autoSolve = false;
+
+/* small logger wrapper */
+function safeLog(...a){ try{ console.log(...a); } catch(e){} }
+
+/* UI refs */
+const sizeSlider = document.getElementById('sizeSlider');
+const sizeLabel = document.getElementById('sizeLabel');
+const slimeSlider = document.getElementById('slimeSlider');
+const slimeLabel = document.getElementById('slimeLabel');
+const genBtn = document.getElementById('genBtn');
+const solveBtn = document.getElementById('solveBtn');
+const resetBtn = document.getElementById('resetBtn');
+const autoBtn = document.getElementById('autoBtn');
+
+/* NEW UI REFS */
+const pathLenBox = document.getElementById('pathLen');
+const simTimeBox = document.getElementById('simTime');
+
+/* Canvas sizing */
+function resizeCanvas(){
+  canvas.width = Math.max(200, window.innerWidth - 260);
+  canvas.height = Math.max(200, window.innerHeight);
+  drawMaze();
+}
+window.addEventListener('resize', resizeCanvas);
+
+/* UI bindings */
+sizeSlider.oninput = () => {
+  COLS = ROWS = parseInt(sizeSlider.value,10);
+  sizeLabel.textContent = `${COLS}×${ROWS}`;
+  generateMaze();
+  recreateSlimes();
+  drawMaze();
+};
+slimeSlider.oninput = () => {
+  slimeCount = parseInt(slimeSlider.value,10);
+  slimeLabel.textContent = slimeCount;
+  recreateSlimes();
+};
+
+genBtn.onclick = () => { generateMaze(); recreateSlimes(); drawMaze(); };
+resetBtn.onclick = () => { start = end = null; generateMaze(); recreateSlimes(); drawMaze(); };
+autoBtn.onclick = () => { autoSolve = !autoSolve; autoBtn.textContent = 'Auto-Solve: ' + (autoSolve ? 'ON' : 'OFF'); };
+solveBtn.onclick = () => { if (!start || !end) { alert('Set Start and End first (click canvas)'); return; } runHybridSolve(); };
+
+/* Canvas clicks: Start -> End -> Toggle wall */
+let clickState = 0;
+canvas.addEventListener('click', (e) => {
+  try {
+    const rect = canvas.getBoundingClientRect();
+    computeCellSize();
+    const x = Math.floor((e.clientX - rect.left) / cellSize);
+    const y = Math.floor((e.clientY - rect.top) / cellSize);
+    if (x < 0 || y < 0 || x >= COLS || y >= ROWS) return;
+    if (!start) { if (maze[y][x] === 0) start = {x,y}; else safeLog('Start must be placed on empty cell'); }
+    else if (!end) { if (maze[y][x] === 0) end = {x,y}; else safeLog('End must be on empty cell'); }
+    else {
+      if (start && x === start.x && y === start.y) return;
+      if (end && x === end.x && y === end.y) return;
+      maze[y][x] = maze[y][x] ? 0 : 1;
+    }
+    drawMaze();
+  } catch (err) { console.error('click handler error', err); }
+});
+
+/* Maze generation */
+function initMazeArray(){
+  maze = Array.from({length: ROWS}, ()=>Array(COLS).fill(1));
+}
+function generateMaze(){
+  ROWS = COLS;
+  initMazeArray();
+  let sx=1, sy=1;
+  if (sx>=COLS || sy>=ROWS) { sx=1; sy=1; }
+  const stack = [{x:sx,y:sy}];
+  maze[sy][sx]=0;
+  while(stack.length){
+    const cur = stack[stack.length-1];
+    const directions = shuffle([{dx:0,dy:-2},{dx:2,dy:0},{dx:0,dy:2},{dx:-2,dy:0}]);
+    let carved = false;
+    for(const d of directions){
+      const nx = cur.x + d.dx, ny = cur.y + d.dy;
+      if (nx>0 && nx<COLS-1 && ny>0 && ny<ROWS-1 && maze[ny][nx]===1){
+        maze[cur.y + d.dy/2][cur.x + d.dx/2] = 0;
+        maze[ny][nx] = 0;
+        stack.push({x:nx,y:ny});
+        carved = true;
+        break;
+      }
+    }
+    if (!carved) stack.pop();
+  }
+  start = null; end = null;
+  safeLog('Maze generated', COLS, ROWS);
+}
+
+/* compute cellSize */
+function computeCellSize(){
+  cellSize = Math.max(4, Math.floor(Math.min(canvas.width / COLS, canvas.height / ROWS)));
+}
+
+/* Draw maze */
+let currentPath = null;
+function drawMaze(){
+  computeCellSize();
+  ctx.clearRect(0,0,canvas.width,canvas.height);
+  ctx.fillStyle = '#0e1622';
+  ctx.fillRect(0,0,canvas.width,canvas.height);
+
+  for(let y=0;y<ROWS;y++){
+    for(let x=0;x<COLS;x++){
+      if (maze[y][x] === 1){
+        ctx.fillStyle = '#0b1522';
+        ctx.fillRect(x*cellSize, y*cellSize, cellSize, cellSize);
+      } else {
+        ctx.fillStyle = '#ffffff';
+        ctx.fillRect(x*cellSize, y*cellSize, cellSize, cellSize);
+      }
+    }
+  }
+
+  if (currentPath && currentPath.length){
+    ctx.fillStyle = '#2e63ff';
+    for(const p of currentPath){
+      ctx.fillRect(p.x*cellSize + cellSize*0.12, p.y*cellSize + cellSize*0.12, cellSize*0.76, cellSize*0.76);
+    }
+  }
+
+  if (start){
+    ctx.fillStyle = '#25ff6c';
+    ctx.fillRect(start.x*cellSize + cellSize*0.12, start.y*cellSize + cellSize*0.12, cellSize*0.76, cellSize*0.76);
+  }
+  if (end){
+    ctx.fillStyle = '#ff3b30';
+    ctx.fillRect(end.x*cellSize + cellSize*0.12, end.y*cellSize + cellSize*0.12, cellSize*0.76, cellSize*0.76);
+  }
+}
+
+/* Slime visuals */
+class Slime {
+  constructor(){
+    this.x = Math.random() * canvas.width;
+    this.y = Math.random() * canvas.height;
+    this.vx = (Math.random()-0.5) * 1.6;
+    this.vy = (Math.random()-0.5) * 1.6;
+    this.size = 1 + Math.random()*2;
+    this.alpha = 0.06 + Math.random()*0.12;
+  }
+  move(){
+    this.x += this.vx;
+    this.y += this.vy;
+    if (this.x < 0 || this.x > canvas.width) this.vx *= -1;
+    if (this.y < 0 || this.y > canvas.height) this.vy *= -1;
+  }
+  draw(){
+    ctx.fillStyle = `rgba(14,165,233,${this.alpha})`;
+    ctx.fillRect(this.x, this.y, this.size, this.size);
+  }
+}
+
+function recreateSlimes(){
+  slimes = [];
+  for(let i=0;i<slimeCount;i++) slimes.push(new Slime());
+}
+
+/* animation loop */
+function animate(){
+  try {
+    drawMaze();
+    for(const s of slimes){
+      s.move();
+      s.draw();
+    }
+  } catch (err){
+    console.error('Animation error', err);
+  }
+  requestAnimationFrame(animate);
+}
+
+/* BFS shortest path */
+function bfsShortestPath(){
+  if (!start || !end) return [];
+  const q = [];
+  const visited = Array.from({length: ROWS}, ()=>Array(COLS).fill(false));
+  const parent = Array.from({length: ROWS}, ()=>Array(COLS).fill(null));
+  q.push(start);
+  visited[start.y][start.x] = true;
+  let found = false;
+  while(q.length){
+    const cur = q.shift();
+    if (cur.x === end.x && cur.y === end.y){ found = true; break; }
+    const moves = [{dx:1,dy:0},{dx:-1,dy:0},{dx:0,dy:1},{dx:0,dy:-1}];
+    for(const m of moves){
+      const nx = cur.x + m.dx, ny = cur.y + m.dy;
+      if (nx>=0 && nx<COLS && ny>=0 && ny<ROWS && !visited[ny][nx] && maze[ny][nx]===0){
+        visited[ny][nx] = true;
+        parent[ny][nx] = cur;
+        q.push({x:nx,y:ny});
+      }
+    }
+  }
+  if (!found) return [];
+  const path = [];
+  let p = end;
+  while(p){
+    path.push(p);
+    p = parent[p.y][p.x];
+  }
+  path.reverse();
+  return path;
+}
+
+/* Hybrid Solver */
+function runHybridSolve(){
+  currentPath = [];
+
+  let frames = 0;
+  const maxFrames = 30;
+  const detectRadius = Math.max(8, Math.min(cellSize*1.2, 50));
+
+  function step(){
+    frames++;
+
+    if (!end) {
+      alert('Set End cell first');
+      return;
+    }
+
+    let detected = false;
+    for(const s of slimes){
+      const sx = s.x, sy = s.y;
+      const ex = end.x*cellSize + cellSize/2, ey = end.y*cellSize + cellSize/2;
+      const d2 = (sx-ex)*(sx-ex) + (sy-ey)*(sy-ey);
+      if (d2 < detectRadius*detectRadius){ detected = true; break; }
+    }
+
+    if (detected || frames >= maxFrames){
+      
+      /* ⬇️ NEW — TIME + PATH LENGTH */
+      const t0 = performance.now();
+      currentPath = bfsShortestPath();
+      const t1 = performance.now();
+
+      if (!currentPath || currentPath.length===0){
+        alert('No path found by BFS (maze may be disconnected)');
+        safeLog('BFS returned empty path');
+        pathLenBox.textContent = "0";
+      } else {
+        const len = currentPath.length;
+        safeLog('Path length:', len);
+        pathLenBox.textContent = len;
+      }
+
+      simTimeBox.textContent = (t1 - t0).toFixed(2) + " ms";
+
+      drawMaze();
+      return;
+    }
+
+    setTimeout(step, 12);
+  }
+  step();
+}
+
+/* small shuffle */
+function shuffle(arr){ for(let i=arr.length-1;i>0;i--){ const j=Math.floor(Math.random()*(i+1)); [arr[i],arr[j]]=[arr[j],arr[i]];} return arr; }
+
+/* startup */
+function init(){
+  try {
+    sizeLabel.textContent = `${COLS}×${ROWS}`;
+    slimeLabel.textContent = slimeCount;
+    sizeSlider.value = COLS;
+    slimeSlider.value = slimeCount;
+    generateMaze();
+    recreateSlimes();
+    resizeCanvas();
+    requestAnimationFrame(animate);
+    safeLog('Initialization complete');
+  } catch (err) {
+    console.error('Init error', err);
+  }
+}
+
+init();
+
+</script>
+</body>
+</html>
